@@ -1,0 +1,52 @@
+name: Pegabuscar — Hourly
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-tracker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore seen jobs cache
+        uses: actions/cache@v4
+        with:
+          path: data/seen_jobs.json
+          key: seen-jobs-${{ github.run_id }}
+          restore-keys: |
+            seen-jobs-
+
+      - name: Run Pegabuscar
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          DUOC_EMAIL: ${{ secrets.DUOC_EMAIL }}
+          DUOC_PASSWORD: ${{ secrets.DUOC_PASSWORD }}
+        run: |
+          cd src
+          python main.py
+
+      - name: Save seen jobs cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/seen_jobs.json
+          key: seen-jobs-${{ github.run_id }}
