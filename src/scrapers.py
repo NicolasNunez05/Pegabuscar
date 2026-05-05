@@ -284,32 +284,51 @@ def scrape_computrabajo(queries):
 
 
 # ─────────────────────────────────────────────
-# DUOC LABORAL
-# URL: duoclaboral.cl/trabajo/trabajos-en-chile
+# DUOC LABORAL (requiere login)
 # ─────────────────────────────────────────────
-def scrape_duoclaboral(queries):
+def scrape_duoclaboral(queries, email, password):
     jobs, seen = [], set()
-    base_url = "https://duoclaboral.cl/trabajo/trabajos-en-chile"
-    soup = _get(base_url)
-    if not soup:
-        return jobs
-    for card in soup.select("div[class*='job'], article[class*='job'], li[class*='job'], div[class*='offer']"):
-        title_el   = card.select_one("h2, h3, a[class*='title'], [class*='jobTitle']")
-        company_el = card.select_one("[class*='company'], [class*='empresa']")
-        link_el    = card.select_one("a[href]")
-        title   = title_el.get_text(strip=True)   if title_el   else ""
-        company = company_el.get_text(strip=True) if company_el else ""
-        href    = link_el.get("href", "")         if link_el    else ""
-        if href and not href.startswith("http"):
-            href = "https://duoclaboral.cl" + href
-        if title and href:
-            jid = _make_id(href, title)
-            if jid not in seen:
-                seen.add(jid)
-                jobs.append({
-                    "id": jid, "title": title, "company": company,
-                    "location": "Chile", "url": href,
-                    "description": f"{title} {company}",
-                    "published_at": None, "source": "Duoc Laboral",
-                })
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    try:
+        r = s.get("https://duoclaboral.cl/login", timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+        csrf_input = soup.select_one("input[name='_token'], input[name='csrf_token'], input[name='token']")
+        csrf = csrf_input["value"] if csrf_input else ""
+
+        r = s.post("https://duoclaboral.cl/login",
+                   data={"email": email, "password": password, "_token": csrf},
+                   timeout=15, allow_redirects=True)
+
+        if "logout" not in r.text.lower() and "cerrar sesión" not in r.text.lower():
+            logger.warning("Duoc Laboral: login fallido, verifica credenciales")
+            return []
+
+        for q in queries[:4]:
+            url  = f"https://duoclaboral.cl/trabajo/trabajos-en-chile?q={requests.utils.quote(q)}"
+            soup = _get(url)
+            if not soup:
+                continue
+            for card in soup.select("div[class*='job'], article, div[class*='oferta'], li[class*='job']"):
+                title_el   = card.select_one("h2, h3, [class*='title'], a[class*='job']")
+                company_el = card.select_one("[class*='company'], [class*='empresa']")
+                link_el    = card.select_one("a[href]")
+                title   = title_el.get_text(strip=True)   if title_el   else ""
+                company = company_el.get_text(strip=True) if company_el else ""
+                href    = link_el.get("href", "")         if link_el    else ""
+                if href and not href.startswith("http"):
+                    href = "https://duoclaboral.cl" + href
+                if title and href:
+                    jid = _make_id(href, title)
+                    if jid not in seen:
+                        seen.add(jid)
+                        jobs.append({
+                            "id": jid, "title": title, "company": company,
+                            "location": "Chile", "url": href,
+                            "description": f"{title} {company}",
+                            "published_at": None, "source": "Duoc Laboral",
+                        })
+            time.sleep(2)
+    except Exception as e:
+        logger.warning(f"Duoc Laboral error: {e}")
     return jobs

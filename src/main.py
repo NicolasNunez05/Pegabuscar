@@ -28,8 +28,14 @@ def run():
         ("Laborum",       lambda: scrape_laborum(SEARCH_QUERIES[:6])),
         ("Chiletrabajos", lambda: scrape_chiletrabajos(SEARCH_QUERIES[:6])),
         ("Computrabajo",  lambda: scrape_computrabajo(SEARCH_QUERIES[:6])),
-        ("Duoc Laboral",  lambda: scrape_duoclaboral(SEARCH_QUERIES)),
     ]
+
+    duoc_email = os.environ.get("DUOC_EMAIL", "")
+    duoc_pass  = os.environ.get("DUOC_PASSWORD", "")
+    if duoc_email and duoc_pass:
+        scrapers.append(("Duoc Laboral", lambda: scrape_duoclaboral(SEARCH_QUERIES, duoc_email, duoc_pass)))
+    else:
+        logger.info("Duoc Laboral: credenciales no configuradas, saltando.")
 
     for name, fn in scrapers:
         logger.info(f"Scrapeando {name}...")
