@@ -73,20 +73,31 @@ def get_matched_skills(job: dict) -> list[str]:
 
 def filter_and_score(jobs: list[dict]) -> list[dict]:
     results = []
+    excluded = loc_fail = too_old = too_exp = low_score = 0
     for job in jobs:
         if is_excluded(job):
+            excluded += 1
             continue
         if not is_valid_location(job):
+            loc_fail += 1
             continue
         if is_too_old(job):
+            too_old += 1
             continue
         if has_too_much_experience_required(job):
+            too_exp += 1
             continue
         s = score_job(job)
         if s < MIN_SCORE:
+            low_score += 1
             continue
         job["score"] = s
         job["matched_skills"] = get_matched_skills(job)
         results.append(job)
+
+    import logging
+    log = logging.getLogger("scorer")
+    log.info(f"Filtros → excluidos:{excluded} ubicación:{loc_fail} muy_viejo:{too_old} mucha_exp:{too_exp} score_bajo:{low_score} → pasaron:{len(results)}")
+
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
