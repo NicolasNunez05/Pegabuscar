@@ -4,9 +4,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import SEARCH_QUERIES
-from scrapers import (scrape_getonboard, scrape_indeed, scrape_laborum,
+from scrapers import (scrape_getonboard, scrape_laborum,
                       scrape_chiletrabajos, scrape_computrabajo,
                       scrape_duoclaboral, scrape_google_jobs)
+from enricher import enrich_jobs
 from scorer import filter_and_score
 from deduplicator import filter_new, save_seen
 from emailer import send_email
@@ -54,6 +55,9 @@ def run():
 
     total = len(all_jobs)
     logger.info(f"Total scrapeado: {total}")
+
+    logger.info("Enriqueciendo descripciones...")
+    all_jobs = enrich_jobs(all_jobs)
 
     scored = filter_and_score(all_jobs)
     logger.info(f"Pasaron filtros: {len(scored)}")
