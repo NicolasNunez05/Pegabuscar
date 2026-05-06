@@ -293,11 +293,15 @@ def scrape_duoclaboral(queries, email, password):
     try:
         r = s.get("https://duoclaboral.cl/login", timeout=15)
         soup = BeautifulSoup(r.text, "html.parser")
-        csrf_input = soup.select_one("input[name='_token'], input[name='csrf_token'], input[name='token']")
+        csrf_input = soup.select_one("input[name='_token'], input[name='csrf_token']")
         csrf = csrf_input["value"] if csrf_input else ""
 
         r = s.post("https://duoclaboral.cl/login",
-                   data={"email": email, "password": password, "_token": csrf},
+                   data={
+                       "_username": email,
+                       "_password": password,
+                       "_token":    csrf,
+                   },
                    timeout=15, allow_redirects=True)
 
         if "logout" not in r.text.lower() and "cerrar sesión" not in r.text.lower():
@@ -331,4 +335,43 @@ def scrape_duoclaboral(queries, email, password):
             time.sleep(2)
     except Exception as e:
         logger.warning(f"Duoc Laboral error: {e}")
+    return jobs
+
+# ─────────────────────────────────────────────
+# GOOGLE JOBS (via SerpApi)
+# ─────────────────────────────────────────────
+def scrape_google_jobs(queries, api_key):
+    jobs, seen = [], set()
+    for q in queries:
+        try:
+            resp = SESSION.get("https://serpapi.com/search", params={
+                "engine":  "google_jobs",
+                "q":       f"{q} Chile",
+                "hl":      "es",
+                "gl":      "cl",
+                "api_key": api_key,
+            }, timeout=15)
+            resp.raise_for_status()
+            for item in resp.json().get("jobs_results", []):
+                title    = item.get("title", "")
+                company  = item.get("company_name", "")
+                location = item.get("location", "Chile")
+                href     = item.get("share_link", "")
+                if not href:
+                    links = item.get("related_links", [])
+                    href  = links[0].get("link", "") if links else ""
+                desc = item.get("description", "")
+                if title and href:
+                    jid = _make_id(href, title)
+                    if jid not in seen:
+                        seen.add(jid)
+                        jobs.append({
+                            "id": jid, "title": title, "company": company,
+                            "location": location, "url": href,
+                            "description": desc, "published_at": None,
+                            "source": "Google Jobs",
+                        })
+        except Exception as e:
+            logger.warning(f"Google Jobs error '{q}': {e}")
+        time.sleep(1)
     return jobs

@@ -38,13 +38,15 @@ def has_too_much_experience_required(job: dict) -> bool:
     if MAX_YEARS_EXPERIENCE is None:
         return False
     text = _text(job)
+    # Regex más estricto: solo captura cuando hay contexto claro de experiencia
     matches = re.findall(
-        r'(\d+)\s*(?:\+|a\s*\d+)?\s*(?:años?|years?)\s*(?:de\s*experiencia|of\s*experience)?',
+        r'\b(\d{1,2})\s*(?:\+)?\s*(?:años?|years?)\s*(?:de\s*)?(?:experiencia|experience)',
         text
     )
     if not matches:
         return False
     return any(int(m) > MAX_YEARS_EXPERIENCE for m in matches)
+
 
 
 def score_job(job: dict) -> int:
