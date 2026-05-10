@@ -2,8 +2,10 @@ name: Pegabuscar — Hourly
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    - cron: '0 */4 * * *'   # corre 6 veces al día: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC
   workflow_dispatch:
+
+
 
 jobs:
   run-tracker:
@@ -27,6 +29,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Install Chrome + Selenium
+        run: |
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update -q
+          sudo apt-get install -y google-chrome-stable
+          pip install selenium webdriver-manager
+
       - name: Restore seen jobs cache
         uses: actions/cache@v4
         with:
@@ -40,6 +50,8 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           DUOC_EMAIL: ${{ secrets.DUOC_EMAIL }}
           DUOC_PASSWORD: ${{ secrets.DUOC_PASSWORD }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}   
         run: |
           cd src
           python main.py

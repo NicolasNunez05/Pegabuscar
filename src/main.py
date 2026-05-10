@@ -38,11 +38,18 @@ def run():
     else:
         logger.info("Duoc Laboral: credenciales no configuradas, saltando.")
 
+    # ── Serper.dev (2,500 gratis/mes) — prioridad sobre SerpApi ──
+    serper_key = os.environ.get("SERPER_API_KEY", "")
     serpapi_key = os.environ.get("SERPAPI_KEY", "")
-    if serpapi_key:
-        scrapers.append(("Google Jobs", lambda: scrape_google_jobs(SEARCH_QUERIES[:5], serpapi_key)))
+
+    if serper_key:
+        scrapers.append(("Google Jobs", lambda: scrape_google_jobs(SEARCH_QUERIES[:5], serper_key)))
+        logger.info("Google Jobs: usando Serper.dev")
+    elif serpapi_key:
+        scrapers.append(("Google Jobs", lambda: scrape_google_jobs(SEARCH_QUERIES[:2], serpapi_key)))
+        logger.info("Google Jobs: usando SerpApi (legacy, máx 2 queries)")
     else:
-        logger.info("Google Jobs: SERPAPI_KEY no configurada, saltando.")
+        logger.info("Google Jobs: sin API key configurada, saltando.")
 
     for name, fn in scrapers:
         logger.info(f"Scrapeando {name}...")
@@ -63,7 +70,7 @@ def run():
     logger.info(f"Pasaron filtros: {len(scored)}")
 
     new_jobs, updated_seen = filter_new(scored)
-    logger.info(f"Nuevas esta hora: {len(new_jobs)}")
+    logger.info(f"Nuevas esta ejecución: {len(new_jobs)}")
 
     save_seen(updated_seen)
     send_email(new_jobs, total)

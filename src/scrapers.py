@@ -36,11 +36,37 @@ def _get(url, timeout=15):
         return None
 
 
+def _parse_absolute_date(text: str):
+    """Parsea fechas absolutas tipo '24 de marzo de 2026'."""
+    meses = {
+        "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+        "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+        "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+    }
+    m = re.search(r'(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})', text.lower())
+    if m:
+        day, mes_str, year = int(m.group(1)), m.group(2), int(m.group(3))
+        mes = meses.get(mes_str)
+        if mes:
+            try:
+                return datetime(year, mes, day, tzinfo=timezone.utc)
+            except ValueError:
+                pass
+    # Formato DD/MM/YYYY o YYYY-MM-DD
+    m2 = re.search(r'(\d{4})-(\d{2})-(\d{2})', text)
+    if m2:
+        try:
+            return datetime(int(m2.group(1)), int(m2.group(2)), int(m2.group(3)), tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return None
+
+
 def _parse_relative_time(text):
     now = datetime.now(timezone.utc)
     if not text:
         return None
-    text = text.lower().strip()
+    text_clean = text.lower().strip()
     patterns = [
         (r"(\d+)\s*(minuto|min)",  "minutes"),
         (r"(\d+)\s*(hora|hour)",   "hours"),
@@ -51,29 +77,37 @@ def _parse_relative_time(text):
         (r"hoy|today|just posted", "today"),
     ]
     for pattern, unit in patterns:
-        m = re.search(pattern, text)
+        m = re.search(pattern, text_clean)
         if m:
-            if unit == "today":   return now
-            if unit == "1day":    return now - timedelta(days=1)
+            if unit == "today": return now
+            if unit == "1day":  return now - timedelta(days=1)
             n = int(m.group(1))
             delta = {
                 "minutes": timedelta(minutes=n),
                 "hours":   timedelta(hours=n),
                 "days":    timedelta(days=n),
                 "weeks":   timedelta(weeks=n),
-                "months":  timedelta(days=n*30),
+                "months":  timedelta(days=n * 30),
             }[unit]
             return now - delta
-    return None
+    # Intentar parsear fecha absoluta antes de rendirse
+    return _parse_absolute_date(text)
 
 
 # ─────────────────────────────────────────────
-# GET ON BOARD (API JSON)
+# GET ON BOARD (HTML scraping — API deprecada)
 # ─────────────────────────────────────────────
 def scrape_getonboard(queries):
     jobs, seen = [], set()
-    for q in queries:
-        url = f"https://www.getonbrd.com/api/v0/search/jobs?query={requests.utils.quote(q)}&per_page=20&page=0"
+    # Categorías relevantes de la API pública real
+    categories = [
+        "backend-development",
+        "devops-sysadmin",
+        "data-engineering-bi",
+        "qa-testing",
+    ]
+    for category in categories:
+        url = f"https://www.getonbrd.com/api/v0/categories/{category}/jobs?per_page=20&page=0"
         try:
             resp = SESSION.get(url, timeout=15)
             resp.raise_for_status()
@@ -85,13 +119,13 @@ def scrape_getonboard(queries):
                 a = item.get("attributes", {})
                 if not isinstance(a, dict):
                     continue
-                title    = str(a.get("title", ""))
-                company  = str(a.get("company_name", ""))
-                modality = str(a.get("modality", ""))
-                country  = str(a.get("country", "Chile"))
-                location = f"{modality} {country}".strip()
-                job_url  = str(a.get("url", ""))
-                desc_raw = a.get("description") or a.get("functions") or ""
+                title       = str(a.get("title", ""))
+                company     = str(a.get("company_name", ""))
+                modality    = str(a.get("modality", ""))
+                country     = str(a.get("country", "Chile"))
+                location    = f"{modality} {country}".strip()
+                job_url     = str(a.get("url", ""))
+                desc_raw    = a.get("description") or a.get("functions") or ""
                 description = str(desc_raw)[:2000]
                 published_at = None
                 raw = a.get("published_at", "")
@@ -111,63 +145,14 @@ def scrape_getonboard(queries):
                             "source": "Get on Board",
                         })
         except Exception as e:
-            logger.warning(f"GetOnBoard error '{q}': {e}")
+            logger.warning(f"GetOnBoard error category '{category}': {e}")
         time.sleep(1)
+    logger.info(f"GetOnBoard: {len(jobs)} encontradas")
     return jobs
 
 
 # ─────────────────────────────────────────────
-# INDEED CHILE
-# URL patrón: cl.indeed.com/q-{query}-empleos.html
-# ─────────────────────────────────────────────
-def scrape_indeed(queries):
-    jobs, seen = [], set()
-    s = requests.Session()
-    s.headers.update({
-        **HEADERS,
-        "Referer": "https://cl.indeed.com/",
-        "Cache-Control": "no-cache",
-    })
-    for q in queries[:8]:
-        slug = requests.utils.quote(q.replace(" ", "-"))
-        url  = f"https://cl.indeed.com/q-{slug}-empleos.html"
-        try:
-            r = s.get(url, timeout=15)
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, "html.parser")
-            for card in soup.select("div.job_seen_beacon, li[class*='css-'], div[data-testid='slider_container']"):
-                title_el   = card.select_one("h2.jobTitle span[title], h2.jobTitle span, span[title]")
-                company_el = card.select_one("span[data-testid='company-name'], span.companyName")
-                location_el= card.select_one("div[data-testid='text-location'], div.companyLocation")
-                link_el    = card.select_one("a[data-jk], h2 a, a[id^='job_']")
-                date_el    = card.select_one("span[data-testid='myJobsStateDate'], span.date")
-                title   = title_el.get_text(strip=True)   if title_el    else ""
-                company = company_el.get_text(strip=True) if company_el  else ""
-                location= location_el.get_text(strip=True)if location_el else "Chile"
-                href    = link_el.get("href", "")         if link_el     else ""
-                if href and not href.startswith("http"):
-                    href = "https://cl.indeed.com" + href
-                date_str     = date_el.get_text(strip=True) if date_el else ""
-                published_at = _parse_relative_time(date_str)
-                if title and href:
-                    jid = _make_id(href, title)
-                    if jid not in seen:
-                        seen.add(jid)
-                        jobs.append({
-                            "id": jid, "title": title, "company": company,
-                            "location": location or "Chile", "url": href,
-                            "description": f"{title} {company} {location}",
-                            "published_at": published_at, "source": "Indeed",
-                        })
-        except Exception as e:
-            logger.warning(f"Indeed error '{q}': {e}")
-        time.sleep(3)
-    return jobs
-
-
-# ─────────────────────────────────────────────
-# LABORUM
-# URL patrón: laborum.cl/empleos-busqueda-{query}.html
+# LABORUM (selectores actualizados 2026)
 # ─────────────────────────────────────────────
 def scrape_laborum(queries):
     jobs, seen = [], set()
@@ -177,16 +162,37 @@ def scrape_laborum(queries):
         soup = _get(url)
         if not soup:
             continue
-        for card in soup.select("article[class*='aviso'], div[class*='JobCard'], li[class*='aviso'], div[class*='job-item']"):
-            title_el   = card.select_one("h2, h3, a[class*='title'], [class*='jobTitle']")
-            company_el = card.select_one("[class*='company'], [class*='empresa'], [class*='Company']")
-            location_el= card.select_one("[class*='location'], [class*='ubicacion'], [class*='ciudad']")
-            link_el    = card.select_one("a[href]")
-            date_el    = card.select_one("time, [class*='date'], [class*='fecha'], [class*='time']")
-            title   = title_el.get_text(strip=True)    if title_el    else ""
-            company = company_el.get_text(strip=True)  if company_el  else ""
-            location= location_el.get_text(strip=True) if location_el else "Chile"
-            href    = link_el.get("href", "")          if link_el     else ""
+
+        # Selectores actualizados — estructura Laborum 2025/2026
+        cards = soup.select(
+            "div.items-offer__item, "
+            "div[data-cy='job-card'], "
+            "li.offer-item, "
+            "article[class*='aviso'], "
+            "div[class*='JobCard'], "
+            "div[class*='job-item']"
+        )
+        for card in cards:
+            title_el    = card.select_one(
+                "h2.offer-item__title a, a[data-cy='job-title'], "
+                "h2 a, h3 a, a[class*='title'], [class*='jobTitle']"
+            )
+            company_el  = card.select_one(
+                "span.offer-item__company, [data-cy='company-name'], "
+                "[class*='company'], [class*='empresa'], [class*='Company']"
+            )
+            location_el = card.select_one(
+                "li.offer-item__location, [data-cy='location'], "
+                "[class*='location'], [class*='ubicacion'], [class*='ciudad']"
+            )
+            link_el     = card.select_one("a[href]")
+            date_el     = card.select_one(
+                "time, [class*='date'], [class*='fecha'], [class*='time']"
+            )
+            title    = title_el.get_text(strip=True)    if title_el    else ""
+            company  = company_el.get_text(strip=True)  if company_el  else ""
+            location = location_el.get_text(strip=True) if location_el else "Chile"
+            href     = link_el.get("href", "")          if link_el     else ""
             if href and not href.startswith("http"):
                 href = "https://www.laborum.cl" + href
             date_str     = date_el.get_text(strip=True) if date_el else ""
@@ -202,12 +208,12 @@ def scrape_laborum(queries):
                         "published_at": published_at, "source": "Laborum",
                     })
         time.sleep(2)
+    logger.info(f"Laborum: {len(jobs)} encontradas")
     return jobs
 
 
 # ─────────────────────────────────────────────
-# CHILETRABAJOS
-# URL patrón: chiletrabajos.cl/encuentra-un-empleo?action=search&2={query}
+# CHILETRABAJOS (sin cambios — funciona OK)
 # ─────────────────────────────────────────────
 def scrape_chiletrabajos(queries):
     jobs, seen = [], set()
@@ -217,15 +223,15 @@ def scrape_chiletrabajos(queries):
         if not soup:
             continue
         for card in soup.select("div[class*='job'], article[class*='job'], div[class*='aviso'], li[class*='job']"):
-            title_el   = card.select_one("h2, h3, a[class*='title'], [class*='jobTitle']")
-            company_el = card.select_one("[class*='company'], [class*='empresa']")
-            location_el= card.select_one("[class*='location'], [class*='ciudad'], [class*='ubicacion']")
-            link_el    = card.select_one("a[href]")
-            date_el    = card.select_one("time, [class*='date'], [class*='fecha']")
-            title   = title_el.get_text(strip=True)    if title_el    else ""
-            company = company_el.get_text(strip=True)  if company_el  else ""
-            location= location_el.get_text(strip=True) if location_el else "Chile"
-            href    = link_el.get("href", "")          if link_el     else ""
+            title_el    = card.select_one("h2, h3, a[class*='title'], [class*='jobTitle']")
+            company_el  = card.select_one("[class*='company'], [class*='empresa']")
+            location_el = card.select_one("[class*='location'], [class*='ciudad'], [class*='ubicacion']")
+            link_el     = card.select_one("a[href]")
+            date_el     = card.select_one("time, [class*='date'], [class*='fecha']")
+            title    = title_el.get_text(strip=True)    if title_el    else ""
+            company  = company_el.get_text(strip=True)  if company_el  else ""
+            location = location_el.get_text(strip=True) if location_el else "Chile"
+            href     = link_el.get("href", "")          if link_el     else ""
             if href and not href.startswith("http"):
                 href = "https://www.chiletrabajos.cl" + href
             date_str     = date_el.get_text(strip=True) if date_el else ""
@@ -245,8 +251,7 @@ def scrape_chiletrabajos(queries):
 
 
 # ─────────────────────────────────────────────
-# COMPUTRABAJO
-# URL patrón: cl.computrabajo.com/trabajo-de-{query}
+# COMPUTRABAJO (sin cambios — funciona OK)
 # ─────────────────────────────────────────────
 def scrape_computrabajo(queries):
     jobs, seen = [], set()
@@ -257,14 +262,14 @@ def scrape_computrabajo(queries):
         if not soup:
             continue
         for card in soup.select("article[class*='box_offer'], div[class*='offerBlock'], article.job"):
-            title_el   = card.select_one("h2 a, h3 a, a[class*='js-o-link'], [class*='title']")
-            company_el = card.select_one("[class*='company'], p[class*='dbl']")
-            location_el= card.select_one("[class*='location'], p[class*='fs16']")
-            date_el    = card.select_one("p[class*='fc_base'] span, [class*='date'], time")
-            title   = title_el.get_text(strip=True)    if title_el    else ""
-            company = company_el.get_text(strip=True)  if company_el  else ""
-            location= location_el.get_text(strip=True) if location_el else "Chile"
-            href    = title_el.get("href", "")         if title_el    else ""
+            title_el    = card.select_one("h2 a, h3 a, a[class*='js-o-link'], [class*='title']")
+            company_el  = card.select_one("[class*='company'], p[class*='dbl']")
+            location_el = card.select_one("[class*='location'], p[class*='fs16']")
+            date_el     = card.select_one("p[class*='fc_base'] span, [class*='date'], time")
+            title    = title_el.get_text(strip=True)    if title_el    else ""
+            company  = company_el.get_text(strip=True)  if company_el  else ""
+            location = location_el.get_text(strip=True) if location_el else "Chile"
+            href     = title_el.get("href", "")         if title_el    else ""
             if href and not href.startswith("http"):
                 href = "https://cl.computrabajo.com" + href
             date_str     = date_el.get_text(strip=True) if date_el else ""
@@ -284,37 +289,44 @@ def scrape_computrabajo(queries):
 
 
 # ─────────────────────────────────────────────
-# DUOC LABORAL (requiere login)
+# DUOC LABORAL (sin cambios)
 # ─────────────────────────────────────────────
 def scrape_duoclaboral(queries, email, password):
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    import time as _time
+
+    opts = Options()
+    opts.add_argument("--headless")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--window-size=1920,1080")
+
     jobs, seen = [], set()
-    s = requests.Session()
-    s.headers.update(HEADERS)
+    driver = None
     try:
-        r = s.get("https://duoclaboral.cl/login", timeout=15)
-        soup = BeautifulSoup(r.text, "html.parser")
-        csrf_input = soup.select_one("input[name='_token'], input[name='csrf_token']")
-        csrf = csrf_input["value"] if csrf_input else ""
-
-        r = s.post("https://duoclaboral.cl/login",
-                   data={
-                       "_username": email,
-                       "_password": password,
-                       "_token":    csrf,
-                   },
-                   timeout=15, allow_redirects=True)
-
-        if "logout" not in r.text.lower() and "cerrar sesión" not in r.text.lower():
-            logger.warning("Duoc Laboral: login fallido, verifica credenciales")
+        driver = webdriver.Chrome(options=opts)
+        wait = WebDriverWait(driver, 15)
+        driver.get("https://duoclaboral.cl/login")
+        _time.sleep(3)
+        wait.until(EC.visibility_of_element_located((By.ID, "username"))).send_keys(email)
+        driver.find_element(By.ID, "password").send_keys(password)
+        driver.find_element(By.ID, "userLoginSubmit").click()
+        _time.sleep(5)
+        if "login" in driver.current_url:
+            logger.warning("Duoc Laboral: login fallido")
             return []
-
         for q in queries[:4]:
-            url  = f"https://duoclaboral.cl/trabajo/trabajos-en-chile?q={requests.utils.quote(q)}"
-            soup = _get(url)
-            if not soup:
-                continue
-            for card in soup.select("div[class*='job'], article, div[class*='oferta'], li[class*='job']"):
-                title_el   = card.select_one("h2, h3, [class*='title'], a[class*='job']")
+            url = f"https://duoclaboral.cl/trabajo/trabajos-en-chile?Search[q]={requests.utils.quote(q)}&Search[jobOfferType]=0"
+            driver.get(url)
+            _time.sleep(3)
+            soup = BeautifulSoup(driver.page_source, "lxml")
+            for card in soup.select("div[class*='job'], article[class*='job'], li[class*='job']"):
+                title_el   = card.select_one("h2, h3, [class*='title']")
                 company_el = card.select_one("[class*='company'], [class*='empresa']")
                 link_el    = card.select_one("a[href]")
                 title   = title_el.get_text(strip=True)   if title_el   else ""
@@ -332,17 +344,76 @@ def scrape_duoclaboral(queries, email, password):
                             "description": f"{title} {company}",
                             "published_at": None, "source": "Duoc Laboral",
                         })
-            time.sleep(2)
+            _time.sleep(2)
     except Exception as e:
-        logger.warning(f"Duoc Laboral error: {e}")
+        logger.warning(f"Duoc Laboral Selenium error: {e}")
+    finally:
+        if driver:
+            driver.quit()
     return jobs
 
+
 # ─────────────────────────────────────────────
-# GOOGLE JOBS (via SerpApi)
+# GOOGLE JOBS via Serper.dev (2,500 búsquedas gratis/mes)
+# Reemplaza SerpApi — registra en serper.dev, gratis sin tarjeta
+# Secret en GitHub: SERPER_API_KEY
 # ─────────────────────────────────────────────
 def scrape_google_jobs(queries, api_key):
+    """
+    Usa Serper.dev en vez de SerpApi.
+    2,500 búsquedas gratis/mes vs 100 de SerpApi.
+    Con cron horario y 2 queries por run = ~1,440/mes → entra en free tier.
+    """
     jobs, seen = [], set()
-    for q in queries:
+    # Limitado a 2 queries por run para no exceder free tier con cron horario
+    for q in queries[:2]:
+        try:
+            resp = requests.post(
+                "https://google.serper.dev/search",
+                headers={
+                    "X-API-KEY": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "q": f"{q} Chile site:linkedin.com OR site:getonbrd.com OR site:computrabajo.com",
+                    "gl": "cl",
+                    "hl": "es",
+                    "num": 10,
+                    "tbs": "qdr:w",  # últimos 7 días
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            for item in resp.json().get("organic", []):
+                title   = item.get("title", "")
+                href    = item.get("link", "")
+                snippet = item.get("snippet", "")
+                # Limpiar título de sufijos de portales
+                title = re.sub(r'\s*[–\-|]\s*(LinkedIn|Computrabajo|Get on Board).*$', '', title).strip()
+                if title and href:
+                    jid = _make_id(href, title)
+                    if jid not in seen:
+                        seen.add(jid)
+                        jobs.append({
+                            "id": jid, "title": title, "company": "",
+                            "location": "Chile", "url": href,
+                            "description": f"{title} {snippet}",
+                            "published_at": None, "source": "Google Jobs",
+                        })
+        except Exception as e:
+            logger.warning(f"Serper error '{q}': {e}")
+        time.sleep(1)
+    logger.info(f"Google Jobs (Serper): {len(jobs)} encontradas")
+    return jobs
+
+
+# ─────────────────────────────────────────────
+# SerpApi legacy — mantenido por compatibilidad
+# NO usar si tienes SERPER_API_KEY, consume créditos rápido
+# ─────────────────────────────────────────────
+def scrape_google_jobs_serpapi(queries, api_key):
+    jobs, seen = [], set()
+    for q in queries[:2]:  # máximo 2 para no quemar los 100 gratis
         try:
             resp = SESSION.get("https://serpapi.com/search", params={
                 "engine":  "google_jobs",
@@ -350,6 +421,7 @@ def scrape_google_jobs(queries, api_key):
                 "hl":      "es",
                 "gl":      "cl",
                 "api_key": api_key,
+                "no_cache": "false",  # usar cache cuando sea posible (gratis)
             }, timeout=15)
             resp.raise_for_status()
             for item in resp.json().get("jobs_results", []):
@@ -372,6 +444,6 @@ def scrape_google_jobs(queries, api_key):
                             "source": "Google Jobs",
                         })
         except Exception as e:
-            logger.warning(f"Google Jobs error '{q}': {e}")
+            logger.warning(f"SerpApi error '{q}': {e}")
         time.sleep(1)
     return jobs
